@@ -1,9 +1,13 @@
 # getWholesaleCAISO.py
 # Author(s):    Brian Woo-Shem
-# Version:      1.1
-# Last Updated: 2021-07-29
+# Version:      1.2 Stable
+# Last Updated: 2021-11-07
+# Changelog:
+# - Bug fix (array indexing issue) so output is correctly synchronized to 5 minute timesteps.
+#   WARNING: Older data using older code versions is incorrect - data is offset by tshr * h!
+#
 # Get wholesale data from CAISO website
-# Handles any number of days (over 1 year), so long as CAISO data exists
+# Handles any number of days (tested 1 day to over 1 year), so long as CAISO data exists
 # Can get leap day as an option
 # Long code but most is error handling for date inputs and data received. 
 
@@ -36,7 +40,7 @@ import requests
 import time
 # also need to install module lxml as a dependency for one of these
 
-header = '\n=========== getWholesaleCAISO.py V1.1 ==========='
+header = '\n=========== getWholesaleCAISO.py V1.2 ==========='
 closer = '================================================\n'
 
 # Accept User Inputs ---------------------------------------------------
@@ -75,6 +79,43 @@ while i < len(sys.argv):
     else: print("Warning: optional input parameter not recognized; ignoring.")
     i += 1
 
+
+
+# Turns one or two digit number to two digits string ( 1 -> '01') ( 12 -> '12')
+def dig2(n):
+    if n < 10: # Handle leading zero on single digit days
+        n2str = '0'+str(n)
+    else:
+        n2str = str(n)
+    return n2str
+
+# Returns date as a string. y, m, d should be int, delim is a string. 
+# ex: datestr(2020, 2, 3, '-') -> 2020-02-03
+def datestr(y, m, d, delim):
+    return str(y) + delim + dig2(m) + delim + dig2(d)
+    
+# Function for figuring out what day is tomorrow ---
+# Handles end of month, end of year, and leap year
+def tmrw(y, m, d,leap):
+    if d < 1: # Handle invalid negative nums or zero
+        print('FATAL ERROR: Invalid day, cannot be less than 1. \n\nx x\n >\n ⁔\n')
+        exit()
+    # Determine leap year. If it is 2000, 2004, 2008, 2012, ..., identify and give Feb 29 days
+    if leap and ((y-2000) % 4 == 0): daysinmon = [31,29,31,30,31,30,31,31,30,31,30,31]
+    else: daysinmon = [31,28,31,30,31,30,31,31,30,31,30,31] # Normal year or ignoring leap day
+    # Check if next day would be beginning of a new month
+    if d >= daysinmon[m-1]:
+        d = 1
+        m += 1 #recall month index mi goes from 0 to 11
+        # Check for end of year
+        if m > 12: # If m = 13 or more, loop back to new year
+            m = 1 # if past December, loop back to Jan
+            y += 1
+    else: #Double digit, middle of month somewhere
+        d += 1
+    return [y,m,d]
+
+
 # Handle Type of Data Request
 if sys.argv[1] == 'd': #Day Ahead
     baseurl = 'http://www.caiso.com/Documents/Day-AheadDailyMarketWatch'
@@ -97,7 +138,7 @@ if debug:
     print (keystart)
     print (keyend)
 # Keep year as string
-year = sys.argv[2]
+year = int(sys.argv[2])
 yearstart = year # Yearstart doesn't get modified for filenaming only (year can change)
 
 # Months - handle 'January', 'Jan', or '1'
@@ -116,7 +157,7 @@ except ValueError:
     else: 
         print('FATAL ERROR: Unrecognized month.\nFor more info, run\n\tgetWholesaleCAISO.py -h  \n\nx x\n >\n ⁔\n')
         exit()
-monthstart = str(mi+1) #only for filenaming
+monthstart = mi+1 #only for filenaming
 
 # Get Day info to int
 try: day = int(sys.argv[4])
@@ -126,7 +167,7 @@ except ValueError:
 
 # d gets modified; day is constant
 d = day
-daystr = str(day)
+daystr = str(dig2(day))
 
 # Number of days
 try: nd = int(sys.argv[5])
@@ -137,7 +178,8 @@ except ValueError:
 # Print Verbose Header
 if verbose:
     print(header)
-    print('Getting ' + filename + 'data for ' + str(nd) + ' days, starting ' + month + ' ' + str(day) + ', ' + year )
+    print('Getting ' + filename + 'data for ' + str(nd) + ' days, starting ' + month + ' ' + str(day) + ', ' + str(year) )
+
 
 # Get Data from CAISO ==================================================
 # Initialize Wholesale Price array
@@ -146,32 +188,13 @@ wsprice = np.array([])
 # Repeat for the number of days specified ------------------------------
 for cd in range(day,day+nd):
     # Previous for filenaming trick
-    prevdate = year + "-" + str(mi) + "-" + daystr
-    # Determine Daystring & month or year incrementing ------------
-    if d < 1: # Handle invalid negative nums or zero
-        print('FATAL ERROR: Invalid day, cannot be less than 1. \n\nx x\n >\n ⁔\n')
-        exit()
-    elif d < 10: # Handle leading zero on single digit days
-        daystr = '0'+str(d)
-    else:
-        # Determine leap year. If it is 2000, 2004, 2008, 2012, ..., identify and give Feb 29 days
-        if leap and ((int(year)-2000) % 4 == 0): daysinmon = [31,29,31,30,31,30,31,31,30,31,30,31]
-        else: daysinmon = [31,28,31,30,31,30,31,31,30,31,30,31] # Normal year or ignoring leap day
-        # Check if next day would be beginning of a new month
-        if d > daysinmon[mi]:
-            d = 1
-            mi += 1 #recall month index mi goes from 0 to 11
-            # If mi = 12 or more, loop back to new year
-            if mi > 11:
-                mi = 0 # if past December, loop back to Jan
-                year = str(int(year)+1)
-            month = monthlist[mi]
-            daystr = '0'+str(d)
-        else: #Double digit, middle of month somewhere
-            daystr = str(d)
+    prevdate = datestr(year,mi+1,d,'-')
+    
+    month = monthlist[mi] #Name of mon, 3 letter string
+    daystr = dig2(d) # 2 digit string
     
     # The URL for the CAISO data, created based on date info -------
-    url = baseurl + month + daystr + '-' + year +'.html'
+    url = baseurl + month + daystr + '-' + str(year) +'.html'
     
     # Get html from CAISO webpage ----------------------------------
     http = urllib3.PoolManager()
@@ -218,10 +241,13 @@ for cd in range(day,day+nd):
         print(pdatstr)
         print(type(pdatstr))
     
+    # Remove any bad values
+    pdatstr = pdatstr.replace("\"NA\",","")
+    
     # Create numpy array from the string that looks like '12.3, 45.6, 78.9, ...'
     npd = np.fromstring(pdatstr, sep=",", dtype=float)
     if verbose:
-        print("Data Array for " + month + ' ' + daystr + ', ' + year + ': ')
+        print("Data Array for " + month + ' ' + daystr + ', ' + str(year) + ': ')
         print(npd)
     
     try: # Add the data from this iteration to any existing data ----
@@ -229,39 +255,51 @@ for cd in range(day,day+nd):
     except TypeError: 
         wsprice = npd #crude way to handle first time pricedat is empty so can't concatenate empty
     
-    if debug: print(wsprice)
-    # Increment daycounter
-    d = d + 1
+    if debug: 
+        print(wsprice)
+        n = len(npd)
+        if n > 24*tshr: #ignore if only off by one - seems to work anyway
+            print("Warning: Too many data points found! Expected: " + str(24*tshr) + "   Got: " + str(n)+"\n" )
+        if n < 24*tshr:
+            print("Warning: Too few data points found! Expected: " + str(24*tshr) + "   Got: " + str(n)+"\n" )
+    
+    # Determine day & month or year incrementing
+    year, mi, d = tmrw(year,mi,d,leap)
+    
 # End repeated code. All days are complete here ------------------------
 
 # Final processing. wsprice is array with all the values ===============
-#Remove garbage values (usually -1)
+#Remove garbage values (usually -1). Len(wsprice) may change.
 wsprice = wsprice[wsprice>=0]
+
+n = len(wsprice)
 
 if debug:
     print("\nEntire Price Dataset: ")
     print(wsprice)
-
-n = len(wsprice)
+    print("\n\nTotal " + str(n) + " values, expect " + str(nd * 24 * tshr) + "\n")
 
 # Convert long row of data to long column & get 5 min timesteps---------
 # Numpy array in columns instead of rows
-newprc = np.zeros((n*tshr,1))
+newprc = np.zeros((int(n*12/tshr),1))
 
-# Repeat the same value tshr times for tshr = Time Steps Per Hour timesteps
+# Repeat the same value 12/tshr times for 5 min timesteps.
+# Note: Assumes that 12/tshr is an integer; ie tshr is an integer multiple of 5. Other input timesteps not supported.
+if int(12/tshr) != 12/tshr: print("\nWARNING: Timestep of input data is not evenly divisible by 5 min output timesteps. \n")
 for i in range (0,n):
-    for j in range (0,tshr):
-        newprc[i*tshr+j,0] = wsprice[i]
+    for j in range (0,int(12/tshr)):
+        newprc[int(i*12/tshr+j),0] = wsprice[i]
 
-if debug: print(newprc) # Sanity check before writing
+if debug: 
+    print(newprc) # Sanity check before writing
+    print("\n\nTotal " + str(len(newprc)) + " values, expect " + str(nd * 24 * 12) + "\n")
 
 # Write File with Data =================================================
 # Filename in form of example: WholesaleDayAhead_2020-08-03_2020-08-10.csv
-#outfile = filename + yearstart + "-" + monthstart + "-" + str(day) + "_" + year + "-" + str(mi+1) + "-" + daystr + '.csv'
-outfile = filename + yearstart + "-" + monthstart + "-" + str(day) + "_" + prevdate + '.csv'
+outfile = filename + datestr(yearstart,monthstart,day,'-') + "_" + prevdate + '.csv'
 np.savetxt(outfile, newprc[:,0], delimiter=',')
 
 if verbose: # Show final result ----------------------------------------
     print('\n COMPLETED - SUCCESS! \n File is saved as: ' + outfile)
     print('================================================\n')
-else: print('\n COMPLETED! File is saved as: ' + outfile)
+else: print('\n COMPLETE! File is saved as: ' + outfile)
